@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 import streamlit as st
+import sys
 
 # -------------------------------------------------
 # Page config + premium styling
@@ -198,15 +199,14 @@ if st.button("🚀 Generate report", use_container_width=True):
     run_out.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "python",
-        "-m",
-        "harmonic_hunter.main",
-        csv_path,
-        "--map-name", map_name,
-        "--facility", facility,
-        "--out-dir", str(run_out),
-        "--report-kind", "executive" if report_kind.startswith("Executive") else "full",
-    ]
+    sys.executable,  # 🔑 critical fix
+    str(ROOT_DIR / "harmonic_hunter" / "main.py"),
+    csv_path,
+    "--map-name", map_name,
+    "--facility", facility,
+    "--out-dir", str(run_out),
+    "--report-kind", "executive" if report_kind.startswith("Executive") else "full",
+]
 
     if baseline_path:
         cmd += ["--baseline-csv", baseline_path]
