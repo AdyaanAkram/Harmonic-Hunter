@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 import numpy as np
 import typer
@@ -34,6 +34,9 @@ from harmonic_hunter.utils.logging import info, warn
 app = typer.Typer(add_completion=False)
 
 
+ReportKind = Literal["executive", "full"]
+
+
 def _band_from_score(score: int) -> str:
     if score <= 30:
         return "Safe"
@@ -53,7 +56,7 @@ def _exec_verdict(score: int) -> str:
     if score <= 60:
         return (
             "Early warning indicators detected. "
-            "Continued monitoring recommended to prevent escalation during peak demand or future expansion."
+            "Continued monitoring is recommended to prevent escalation during peak demand or future expansion."
         )
     return (
         "Elevated power-quality risk detected. "
@@ -62,9 +65,7 @@ def _exec_verdict(score: int) -> str:
 
 
 def _make_delta_chart(out_path: str, baseline_score: int, current_score: int):
-    """
-    Creates a tiny baseline vs current comparison chart for the PDF (no seaborn).
-    """
+    """Creates a small baseline vs current comparison chart for the PDF (matplotlib only)."""
     import matplotlib.pyplot as plt
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +85,39 @@ def _make_delta_chart(out_path: str, baseline_score: int, current_score: int):
     plt.close(fig)
 
 
+def _safe_phase_order(phases: list[str]) -> list[str]:
+    # Prefer A/B/C ordering if present, otherwise stable sort
+    order = {"A": 0, "B": 1, "C": 2, "N": 3}
+    return sorted(phases, key=lambda p: (order.get(str(p).upper(), 99), str(p)))
+
+
+def _compute_facility_score(df, map_name: str) -> tuple[int, bool]:
+    sr = float(estimate_sample_rate(df))
+    fft_ok = bool(fft_is_valid(sr, settings.fundamental_hz))
+    harms_by_phase = per_phase_harmonics(df)
+
+    scores: list[int] = []
+    for phase in _safe_phase_order(list(harms_by_phase.keys())):
+        harms = harms_by_phase.get(phase, {})
+        sig = df[df["phase"].astype(str) == str(phase)]["current_a"].to_numpy(dtype=float)
+        cf = crest_factor(sig)
+        var = current_variability_percent(sig)
+
+        if fft_ok:
+            thd = thd_percent(harms)
+            trip = triplen_index_percent(harms)
+            i1 = harms.get(1, 0.0)
+            fifth_pct = 0.0 if i1 <= 1e-12 else (harms.get(5, 0.0) / i1) * 100.0
+            rr = score_risk_fft(thd=thd, triplen=trip, fifth_pct=fifth_pct)
+        else:
+            rr = score_risk_trend(crest=cf, variability=var)
+
+        scores.append(rr.score_0_100)
+
+    facility_score = int(round(float(np.mean(scores)))) if scores else 0
+    return facility_score, fft_ok
+
+
 @app.command()
 def run(
     csv_path: str = typer.Argument(..., help="Path to CSV export from PDU/UPS"),
@@ -91,6 +125,7 @@ def run(
     facility: str = typer.Option("Unknown Facility", help="Facility name shown in report"),
     out_dir: str = typer.Option("data/outputs", help="Output folder"),
     baseline_csv: Optional[str] = typer.Option(None, help="Optional baseline CSV for risk delta comparison"),
+    report_kind: ReportKind = typer.Option("full", help="executive|full"),
 ):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -106,7 +141,7 @@ def run(
     if not fft_ok:
         warn("Sampling rate too low for waveform FFT; using trend-risk indicators.")
 
-    harms_by_phase = per_phase_harmonics(df)  # ok even if trend mode; used only if fft_ok
+    harms_by_phase = per_phase_harmonics(df)
 
     # -------------------------
     # Per-phase analysis
@@ -121,8 +156,7 @@ def run(
     recs_all: list[str] = []
     images: list[str] = []
 
-    # Ensure deterministic ordering A/B/C if present
-    phases = sorted(harms_by_phase.keys(), key=lambda p: str(p))
+    phases = _safe_phase_order(list(harms_by_phase.keys()))
 
     for phase in phases:
         harms = harms_by_phase.get(phase, {})
@@ -131,7 +165,8 @@ def run(
         cf = crest_factor(sig)
         var = current_variability_percent(sig)
 
-        # Always create timeseries chart
+        # Always create timeseries chart (smaller labels handled in plots.py if you implement it there;
+        # PDF will pack charts tightly regardless).
         ts_img = os.path.join(out_dir, f"timeseries_phase_{phase}.png")
         plot_current_timeseries(df, str(phase), ts_img, title=f"Phase {phase} — Current vs Time")
         images.append(ts_img)
@@ -176,7 +211,6 @@ def run(
     band = _band_from_score(facility_score)
     executive_verdict = _exec_verdict(facility_score)
 
-    # Why lines: short + defensible
     why_lines = [
         "Observed current behavior reflects non-linear electrical loading patterns.",
         "Phase-level variability suggests uneven load distribution across monitored circuits.",
@@ -185,9 +219,13 @@ def run(
     recs_all = dedupe_preserve_order(recs_all)
     top_risks = dedupe_preserve_order(top_risks_all)[:4]
 
-    # Put the facility summary first
     summary_lines.insert(0, f"Facility risk score: {facility_score}/100 ({band})")
-    summary_lines.extend(findings_all[:12])  # keep technical section useful but not infinite
+
+    # Keep technical findings bounded
+    if report_kind == "full":
+        summary_lines.extend(findings_all[:18])
+    else:
+        summary_lines.extend(findings_all[:6])
 
     # -------------------------
     # Baseline comparison
@@ -195,37 +233,25 @@ def run(
     baseline_score = None
     risk_delta = None
     delta_chart_path = None
+    change_summary: Optional[str] = None
 
     if baseline_csv:
         try:
             base_df = normalize_timeseries(load_csv(baseline_csv, map_name=map_name))
-            base_sr = float(estimate_sample_rate(base_df))
-            base_fft_ok = bool(fft_is_valid(base_sr, settings.fundamental_hz))
-            base_harms = per_phase_harmonics(base_df)
-
-            base_scores: list[int] = []
-            for phase in sorted(base_harms.keys(), key=lambda p: str(p)):
-                harms = base_harms.get(phase, {})
-                sig = base_df[base_df["phase"].astype(str) == str(phase)]["current_a"].to_numpy(dtype=float)
-                cf = crest_factor(sig)
-                var = current_variability_percent(sig)
-
-                if base_fft_ok:
-                    thd = thd_percent(harms)
-                    trip = triplen_index_percent(harms)
-                    i1 = harms.get(1, 0.0)
-                    fifth_pct = 0.0 if i1 <= 1e-12 else (harms.get(5, 0.0) / i1) * 100.0
-                    rr = score_risk_fft(thd=thd, triplen=trip, fifth_pct=fifth_pct)
-                else:
-                    rr = score_risk_trend(crest=cf, variability=var)
-
-                base_scores.append(rr.score_0_100)
-
-            baseline_score = int(round(float(np.mean(base_scores)))) if base_scores else 0
+            baseline_score, _ = _compute_facility_score(base_df, map_name=map_name)
             risk_delta = facility_score - baseline_score
 
             delta_chart_path = os.path.join(out_dir, "risk_delta.png")
             _make_delta_chart(delta_chart_path, baseline_score, facility_score)
+
+            # Human readable change narrative
+            if risk_delta > 0:
+                change_summary = f"Overall risk increased from {baseline_score} → {facility_score} (Δ +{risk_delta})."
+            elif risk_delta < 0:
+                change_summary = f"Overall risk decreased from {baseline_score} → {facility_score} (Δ {risk_delta})."
+            else:
+                change_summary = f"Overall risk is unchanged at {facility_score}/100."
+
         except Exception as e:
             warn(f"Baseline comparison failed: {e}")
 
@@ -241,13 +267,15 @@ def run(
         risk_band=band,
         baseline_score=baseline_score,
         risk_delta=risk_delta,
+        change_summary=change_summary,
         executive_verdict=executive_verdict,
         why_lines=why_lines,
         key_observations=top_risks or ["No critical risk indicators identified."],
         recommendations=recs_all[:10],
         summary_lines=summary_lines,
-        images=images,
+        images=images if report_kind == "full" else (images[:3] if images else []),
         delta_chart_path=delta_chart_path,
+        report_kind=report_kind,
     )
 
     info(f"Report generated: {out_pdf}")

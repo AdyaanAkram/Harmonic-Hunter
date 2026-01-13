@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -10,13 +10,18 @@ from reportlab.lib.colors import black, HexColor
 from reportlab.lib.utils import ImageReader
 
 
+ReportKind = Literal["executive", "full"]
+
 COLORS = {
     "safe": HexColor("#2E7D32"),
     "monitor": HexColor("#F9A825"),
     "action": HexColor("#EF6C00"),
     "critical": HexColor("#C62828"),
-    "panel": HexColor("#F3F3F3"),
-    "muted": HexColor("#555555"),
+    "panel": HexColor("#111318"),
+    "panel2": HexColor("#171A21"),
+    "muted": HexColor("#A7B0BE"),
+    "text": HexColor("#E9EEF6"),
+    "line": HexColor("#2A2F3A"),
 }
 
 
@@ -31,31 +36,74 @@ def _risk_color(band: str):
     return COLORS["critical"]
 
 
-def _wrap(c: canvas.Canvas, x: float, y: float, text: str, max_chars: int = 98, lh: int = 13) -> float:
+def _wrap(
+    c: canvas.Canvas,
+    x: float,
+    y: float,
+    text: str,
+    max_chars: int = 98,
+    lh: int = 13,
+    bullet: bool = False,
+) -> float:
     """
-    Simple word wrap by character count (good enough for your use case).
-    Returns the new y after drawing.
+    Simple wrap by character count. Returns new y.
     """
-    words = (text or "").split()
+    if not text:
+        return y
+
+    prefix = "• " if bullet else ""
+    words = text.split()
     line = ""
+    first = True
+
     for w in words:
         candidate = (line + " " + w).strip()
-        if len(candidate) <= max_chars:
+        limit = max_chars if first else max_chars  # keep consistent
+        if len(candidate) <= limit:
             line = candidate
         else:
-            c.drawString(x, y, line)
+            c.drawString(x, y, (prefix + line) if first else ("  " + line if bullet else line))
             y -= lh
             line = w
+            first = False
+
     if line:
-        c.drawString(x, y, line)
+        c.drawString(x, y, (prefix + line) if first else ("  " + line if bullet else line))
         y -= lh
+
     return y
 
 
-def _section_title(c: canvas.Canvas, x: float, y: float, title: str) -> float:
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(x, y, title)
+def _title(c: canvas.Canvas, x: float, y: float, text: str) -> float:
+    c.setFont("Helvetica-Bold", 20)
+    c.setFillColor(COLORS["text"])
+    c.drawString(x, y, text)
+    c.setFillColor(black)
+    return y - 26
+
+
+def _section(c: canvas.Canvas, x: float, y: float, text: str) -> float:
+    c.setFont("Helvetica-Bold", 12.5)
+    c.setFillColor(COLORS["text"])
+    c.drawString(x, y, text)
+    c.setFillColor(black)
     return y - 16
+
+
+def _divider(c: canvas.Canvas, x: float, y: float, w: float) -> float:
+    c.setStrokeColor(COLORS["line"])
+    c.setLineWidth(1)
+    c.line(x, y, x + w, y)
+    c.setStrokeColor(black)
+    return y - 14
+
+
+def _safe_img_paths(paths: list[str]) -> list[str]:
+    out = []
+    for p in paths or []:
+        if p and os.path.exists(p):
+            out.append(p)
+    return out
 
 
 def build_pdf_report(
@@ -66,6 +114,7 @@ def build_pdf_report(
     risk_band: str,
     baseline_score: Optional[int],
     risk_delta: Optional[int],
+    change_summary: Optional[str],
     executive_verdict: str,
     why_lines: list[str],
     key_observations: list[str],
@@ -73,79 +122,80 @@ def build_pdf_report(
     summary_lines: list[str],
     images: list[str],
     delta_chart_path: Optional[str] = None,
+    report_kind: ReportKind = "full",
 ):
     os.makedirs(os.path.dirname(out_pdf), exist_ok=True)
 
     c = canvas.Canvas(out_pdf, pagesize=letter)
     W, H = letter
-    m = 50
+    m = 48
 
     # =========================
     # PAGE 1 — EXEC SUMMARY
     # =========================
-    y = H - m
-
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(m, y, "Harmonic Hunter — Power Quality Risk Report")
-    y -= 26
-
-    c.setFont("Helvetica", 11)
-    c.drawString(m, y, f"Facility: {facility_name}")
-    y -= 14
-    c.drawString(m, y, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    y -= 14
-    c.drawString(m, y, f"Analysis Mode: {report_mode}")
-    y -= 18
-
-    # Risk panel
-    panel_h = 135
+    # Dark header band
     c.setFillColor(COLORS["panel"])
-    c.roundRect(m, y - panel_h, W - 2 * m, panel_h, 10, fill=1, stroke=0)
+    c.rect(0, H - 120, W, 120, fill=1, stroke=0)
     c.setFillColor(black)
 
-    # Score
-    c.setFont("Helvetica-Bold", 34)
-    c.drawString(m + 16, y - 46, f"{risk_score}/100")
+    y = H - 52
+    c.setFont("Helvetica-Bold", 22)
+    c.setFillColor(COLORS["text"])
+    c.drawString(m, y, "Harmonic Hunter")
+    c.setFont("Helvetica", 12)
+    c.setFillColor(COLORS["muted"])
+    c.drawString(m, y - 18, "Power Quality Risk Report")
+    c.setFillColor(black)
 
-    # Band
+    # Meta row
+    c.setFont("Helvetica", 10.5)
+    c.setFillColor(COLORS["muted"])
+    c.drawString(m, H - 132, f"Facility: {facility_name}")
+    c.drawString(m + 240, H - 132, f"Mode: {report_mode}")
+    c.drawString(m + 430, H - 132, datetime.now().strftime("Generated: %Y-%m-%d %H:%M"))
+    c.setFillColor(black)
+
+    # Risk panel (light card style)
+    panel_y = H - 320
+    panel_h = 165
+    c.setFillColor(COLORS["panel2"])
+    c.roundRect(m, panel_y, W - 2 * m, panel_h, 14, fill=1, stroke=0)
+    c.setFillColor(black)
+
+    # Score + band
+    c.setFont("Helvetica-Bold", 40)
+    c.setFillColor(COLORS["text"])
+    c.drawString(m + 18, panel_y + panel_h - 70, f"{risk_score}")
+    c.setFont("Helvetica", 12)
+    c.setFillColor(COLORS["muted"])
+    c.drawString(m + 88, panel_y + panel_h - 52, "/100")
+    c.setFillColor(black)
+
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(_risk_color(risk_band))
-    c.drawString(m + 185, y - 40, risk_band)
+    c.drawString(m + 170, panel_y + panel_h - 58, risk_band)
     c.setFillColor(black)
 
-    # Baseline comparison (if provided)
-    c.setFont("Helvetica", 10)
+    # Baseline / change summary
+    c.setFont("Helvetica", 10.5)
+    c.setFillColor(COLORS["muted"])
     if baseline_score is not None and risk_delta is not None:
         sign = "+" if risk_delta > 0 else ""
-        c.setFillColor(COLORS["muted"])
-        c.drawString(m + 185, y - 58, f"Baseline: {baseline_score}/100   Δ {sign}{risk_delta}")
-        c.setFillColor(black)
+        c.drawString(m + 170, panel_y + panel_h - 78, f"Baseline: {baseline_score}/100   Δ {sign}{risk_delta}")
+        if change_summary:
+            c.drawString(m + 170, panel_y + panel_h - 94, change_summary)
+    c.setFillColor(black)
 
-    # Executive verdict (wrapped)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(m + 16, y - 78, "Executive verdict")
-    c.setFont("Helvetica", 11)
-    y_verdict = _wrap(c, m + 16, y - 94, executive_verdict, max_chars=86, lh=13)
-
-    # Key observations (bullets)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(m + 16, y_verdict - 6, "Key observations")
-    yy = y_verdict - 20
-    c.setFont("Helvetica", 11)
-    for obs in (key_observations or [])[:4]:
-        yy = _wrap(c, m + 30, yy, f"• {obs}", max_chars=92, lh=13)
-
-    # Optional delta chart thumbnail on page 1 (small, right side)
+    # Optional delta chart thumbnail (right side)
     if delta_chart_path and os.path.exists(delta_chart_path):
         try:
             img = ImageReader(delta_chart_path)
-            # small card bottom-right of panel area
-            thumb_w = 210
+            thumb_w = 205
             thumb_h = 95
             c.drawImage(
                 img,
                 W - m - thumb_w,
-                (y - panel_h) + 10,
+                panel_y + 18,
                 width=thumb_w,
                 height=thumb_h,
                 preserveAspectRatio=True,
@@ -154,26 +204,68 @@ def build_pdf_report(
         except Exception:
             pass
 
-    # Below panel: Why + Next steps (tight but clean)
-    y = (y - panel_h) - 24
-
-    y = _section_title(c, m, y, "Why you’re seeing this result")
+    # Executive verdict
+    vx = m + 18
+    vy = panel_y + panel_h - 118
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(COLORS["text"])
+    c.drawString(vx, vy, "Executive verdict")
+    c.setFillColor(black)
     c.setFont("Helvetica", 11)
-    for wline in (why_lines or [])[:4]:
-        y = _wrap(c, m, y, f"• {wline}", max_chars=105, lh=13)
-    y -= 6
+    c.setFillColor(COLORS["muted"])
+    vy = _wrap(c, vx, vy - 16, executive_verdict, max_chars=88, lh=13)
+    c.setFillColor(black)
 
-    y = _section_title(c, m, y, "Recommended next steps")
+    # Key observations (bullets)
+    ky = panel_y - 24
+    c.setFont("Helvetica-Bold", 12.5)
+    c.setFillColor(COLORS["text"])
+    c.drawString(m, ky, "Key observations")
+    c.setFillColor(black)
+    ky -= 18
+
     c.setFont("Helvetica", 11)
-    for rec in (recommendations or [])[:8]:
-        y = _wrap(c, m, y, f"• {rec}", max_chars=105, lh=13)
+    c.setFillColor(black)
+    for obs in (key_observations or [])[:4]:
+        ky = _wrap(c, m + 8, ky, obs, max_chars=104, lh=13, bullet=True)
+
+    # Why + Recommendations (two columns)
+    ky -= 6
+    c.setStrokeColor(COLORS["line"])
+    c.line(m, ky, W - m, ky)
+    c.setStrokeColor(black)
+    ky -= 16
+
+    col_w = (W - 2 * m - 18) / 2
+    left_x = m
+    right_x = m + col_w + 18
+
+    # Why
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(COLORS["text"])
+    c.drawString(left_x, ky, "Why you’re seeing this result")
+    c.setFillColor(black)
+    yy = ky - 16
+    c.setFont("Helvetica", 10.8)
+    for line in (why_lines or [])[:4]:
+        yy = _wrap(c, left_x + 8, yy, line, max_chars=58, lh=12, bullet=True)
+
+    # Next steps
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(COLORS["text"])
+    c.drawString(right_x, ky, "Recommended next steps")
+    c.setFillColor(black)
+    ry = ky - 16
+    c.setFont("Helvetica", 10.8)
+    for rec in (recommendations or [])[:7]:
+        ry = _wrap(c, right_x + 8, ry, rec, max_chars=58, lh=12, bullet=True)
 
     # Footer disclaimer
     c.setFont("Helvetica-Oblique", 8.8)
     c.setFillColor(COLORS["muted"])
     c.drawString(
         m,
-        28,
+        26,
         "Advisory analysis based on exported PDU/UPS monitoring data. Not a substitute for on-site inspection or licensed engineering assessment.",
     )
     c.setFillColor(black)
@@ -181,38 +273,45 @@ def build_pdf_report(
     c.showPage()
 
     # =========================
-    # PAGE(S) 2+ — CHARTS
-    # Layout: 2 charts per page, then remaining on next page(s)
+    # PAGE 2+ — CHARTS (2 per page)
     # =========================
-    chart_paths = [p for p in (images or []) if p and os.path.exists(p)]
+    chart_paths = _safe_img_paths(images or [])
+    if report_kind == "executive":
+        chart_paths = chart_paths[:3]  # keep concise
 
     if chart_paths:
         idx = 0
         while idx < len(chart_paths):
-            y = H - m
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(m, y, "Charts")
-            y -= 18
+            # Page header
+            c.setFillColor(COLORS["panel2"])
+            c.rect(0, H - 56, W, 56, fill=1, stroke=0)
+            c.setFillColor(black)
 
-            # Two slots per page
-            slot_h = 240
+            c.setFont("Helvetica-Bold", 14)
+            c.setFillColor(COLORS["text"])
+            c.drawString(m, H - 36, "Charts")
+            c.setFillColor(black)
+
+            y = H - 80
+
+            # Two charts per page
+            slot_h = 250
             gap = 18
 
-            for slot in range(2):
+            for _slot in range(2):
                 if idx >= len(chart_paths):
                     break
 
                 p = chart_paths[idx]
                 idx += 1
 
-                # Chart title from filename (simple)
+                # Title
                 c.setFont("Helvetica-Bold", 11)
                 c.drawString(m, y, os.path.basename(p).replace("_", " ").replace(".png", ""))
                 y -= 10
 
                 try:
                     img = ImageReader(p)
-                    # Fit into a wide, compact rectangle
                     img_w = W - 2 * m
                     img_h = slot_h
                     c.drawImage(
@@ -233,24 +332,24 @@ def build_pdf_report(
             c.showPage()
 
     # =========================
-    # FINAL PAGES — TECHNICAL FINDINGS
+    # FINAL — TECHNICAL FINDINGS (full only)
     # =========================
-    y = H - m
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(m, y, "Detailed Technical Findings")
-    y -= 18
-    c.setFont("Helvetica", 10)
+    if report_kind == "full":
+        y = H - m
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(m, y, "Detailed Technical Findings")
+        y -= 18
+        c.setFont("Helvetica", 10)
 
-    for line in (summary_lines or []):
-        # wrap + page breaks so no cutoff
-        if y < 80:
-            c.showPage()
-            y = H - m
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(m, y, "Detailed Technical Findings (continued)")
-            y -= 18
-            c.setFont("Helvetica", 10)
+        for line in (summary_lines or []):
+            if y < 78:
+                c.showPage()
+                y = H - m
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(m, y, "Detailed Technical Findings (continued)")
+                y -= 18
+                c.setFont("Helvetica", 10)
 
-        y = _wrap(c, m, y, f"• {line}", max_chars=110, lh=12)
+            y = _wrap(c, m, y, f"• {line}", max_chars=110, lh=12)
 
     c.save()
