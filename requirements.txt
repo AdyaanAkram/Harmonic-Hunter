@@ -1,6 +1,7 @@
 streamlit
-pandas
 numpy
+pandas
 matplotlib
 reportlab
 typer
+click
