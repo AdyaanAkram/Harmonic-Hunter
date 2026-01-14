@@ -54,25 +54,31 @@ small, .stCaption {opacity: 0.90;}
 }
 
 /* =================================================
-   Demo selector as TRUE "buttons" (radio styled)
-   - no checkbox shown
-   - whole button highlights when selected
-   - same size, centered text
+   Demo selector: style ONLY the actual radio options
+   Fixes:
+   - removes the weird empty "box" above
+   - one-click switching (handled in Python below)
 ================================================= */
 
+/* Make the option row centered + consistent */
 div[data-testid="stRadio"] div[role="radiogroup"]{
   display: flex !important;
   gap: 14px !important;
   justify-content: center !important;
   align-items: stretch !important;
-  flex-wrap: nowrap !important;
+  flex-wrap: wrap !important;
 }
 
-/* Each option label becomes a button */
-div[data-testid="stRadio"] label{
-  flex: 1 1 0 !important;
-  min-width: 210px !important;
-  max-width: 240px !important;
+/* Some Streamlit versions inject extra wrappers inside radiogroup (can look like an empty box).
+   Hide any direct-child DIVs that are not labels. */
+div[data-testid="stRadio"] div[role="radiogroup"] > div{
+  display: none !important;
+}
+
+/* Style ONLY direct-child labels (the real options) as buttons */
+div[data-testid="stRadio"] div[role="radiogroup"] > label{
+  flex: 0 1 240px !important;   /* consistent width */
+  min-width: 220px !important;
 
   display: flex !important;
   align-items: center !important;
@@ -80,7 +86,7 @@ div[data-testid="stRadio"] label{
 
   border-radius: 16px !important;
   padding: 0.95rem 1.05rem !important;
-  min-height: 74px !important;
+  min-height: 76px !important;
 
   border: 1px solid rgba(255,255,255,0.14) !important;
   background: rgba(255,255,255,0.04) !important;
@@ -88,13 +94,12 @@ div[data-testid="stRadio"] label{
   text-align: center !important;
   cursor: pointer !important;
 
-  /* prevent weird vertical letter stacking */
   white-space: normal !important;
   word-break: normal !important;
 }
 
-/* Hide the default radio circle container */
-div[data-testid="stRadio"] label > div:first-child{
+/* Hide the default radio circle area inside each label */
+div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child{
   display: none !important;
 }
 
@@ -104,34 +109,24 @@ div[data-testid="stRadio"] input[type="radio"]{
 }
 
 /* Hover */
-div[data-testid="stRadio"] label:hover{
+div[data-testid="stRadio"] div[role="radiogroup"] > label:hover{
   border-color: rgba(255,255,255,0.30) !important;
   background: rgba(255,255,255,0.06) !important;
 }
 
-/* Selected state (whole button changes color) */
-div[data-testid="stRadio"] label:has(input:checked){
+/* Selected = whole button changes color */
+div[data-testid="stRadio"] div[role="radiogroup"] > label:has(input:checked){
   border-color: rgba(80,160,255,0.85) !important;
   background: rgba(80,160,255,0.22) !important;
 }
 
 /* Text inside option */
-div[data-testid="stRadio"] label span{
+div[data-testid="stRadio"] div[role="radiogroup"] > label span{
   width: 100% !important;
   line-height: 1.18 !important;
   font-weight: 650 !important;
   display: block !important;
   text-align: center !important;
-}
-
-/* Responsive fallback: allow wrap on smaller screens */
-@media (max-width: 980px){
-  div[data-testid="stRadio"] div[role="radiogroup"]{
-    flex-wrap: wrap !important;
-  }
-  div[data-testid="stRadio"] label{
-    min-width: 180px !important;
-  }
 }
 </style>
 """
@@ -233,34 +228,31 @@ facility = st.text_input(
 )
 
 # -------------------------------------------------
-# STEP 2 — Demo selection (real "button" behavior)
+# STEP 2 — Demo selection (one-click switch, no weird extra box)
 # -------------------------------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.markdown('<div class="step">STEP 2</div>', unsafe_allow_html=True)
 st.subheader("Choose a demo")
-st.caption("Select one demo. To unselect, choose “No demo selected”.")
+st.caption('Select one demo. To unselect, choose “No demo selected”.')
 
+# ✅ Let Streamlit own the state (prevents "double click" issues)
 demo_labels = ["No demo selected"] + [f"{DEMOS[k]['emoji']} {k}" for k in DEMOS.keys()]
-demo_map = {"No demo selected": None}
+demo_to_key = {"No demo selected": None}
 for k in DEMOS.keys():
-    demo_map[f"{DEMOS[k]['emoji']} {k}"] = k
+    demo_to_key[f"{DEMOS[k]['emoji']} {k}"] = k
 
-# Keep selection stable across reruns
-st.session_state.setdefault("demo_choice_label", "No demo selected")
+# default once
+st.session_state.setdefault("demo_choice", "No demo selected")
 
 choice_label = st.radio(
     "Demo selector",
     demo_labels,
-    index=demo_labels.index(st.session_state["demo_choice_label"])
-    if st.session_state["demo_choice_label"] in demo_labels
-    else 0,
+    key="demo_choice",
     horizontal=True,
     label_visibility="collapsed",
 )
 
-st.session_state["demo_choice_label"] = choice_label
-chosen_demo_key = demo_map.get(choice_label, None)
-
+chosen_demo_key = demo_to_key.get(choice_label, None)
 demo_used = chosen_demo_key is not None
 
 csv_path = None
