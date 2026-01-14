@@ -56,32 +56,60 @@ small, .stCaption {opacity: 0.90;}
 
 /* -----------------------------
    Demo buttons (checkbox styled)
-   - clickable "button"
+   - same size
+   - centered text
+   - hide checkbox square
    - selected highlight
 ------------------------------ */
-div[data-testid="stCheckbox"] label {
+div[data-testid="stCheckbox"] {
   width: 100%;
-  justify-content: center;
-  border-radius: 14px !important;
-  padding: 0.70rem 0.90rem !important;
-  border: 1px solid rgba(255,255,255,0.14) !important;
-  background: rgba(255,255,255,0.04) !important;
 }
 
+/* Make the whole label look like a button */
+div[data-testid="stCheckbox"] label {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+
+  border-radius: 16px !important;
+  padding: 0.90rem 1.00rem !important;
+  min-height: 64px !important;            /* SAME HEIGHT */
+  border: 1px solid rgba(255,255,255,0.14) !important;
+  background: rgba(255,255,255,0.04) !important;
+
+  text-align: center !important;
+  cursor: pointer !important;
+}
+
+/* Hide the default checkbox square container (Streamlit puts it inside label) */
+div[data-testid="stCheckbox"] label > div:first-child {
+  display: none !important;
+}
+
+/* Also hide the actual input */
+div[data-testid="stCheckbox"] input[type="checkbox"]{
+  display: none !important;
+}
+
+/* Nice hover */
 div[data-testid="stCheckbox"] label:hover {
   border-color: rgba(255,255,255,0.30) !important;
   background: rgba(255,255,255,0.06) !important;
 }
 
-/* hide the square checkbox */
-div[data-testid="stCheckbox"] input[type="checkbox"]{
-  display: none !important;
-}
-
-/* selected state (Safari/Chrome/Edge support :has) */
+/* Selected state (Safari/Chrome/Edge support :has) */
 div[data-testid="stCheckbox"] label:has(input:checked) {
   border-color: rgba(80,160,255,0.80) !important;
   background: rgba(80,160,255,0.20) !important;
+}
+
+/* Center + keep text readable if it wraps */
+div[data-testid="stCheckbox"] label span {
+  display: block !important;
+  width: 100% !important;
+  line-height: 1.15 !important;
+  font-weight: 650 !important;
 }
 </style>
 """
@@ -187,14 +215,16 @@ facility = st.text_input(
 # -------------------------------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.markdown('<div class="step">STEP 2</div>', unsafe_allow_html=True)
-st.subheader("Choose demo OR upload your own data")
+
+# ✅ removed "OR upload your own data"
+st.subheader("Choose a demo")
+
 st.caption("Click a demo to select it. Click it again to unselect. Only one can be selected.")
 
 DEMO_NAMES = list(DEMOS.keys())
 DEMO_KEYS = {name: f"demo_btn__{i}" for i, name in enumerate(DEMO_NAMES)}
 
 st.session_state.setdefault("demo_selected", None)
-# initialize checkbox keys once
 for n in DEMO_NAMES:
     st.session_state.setdefault(DEMO_KEYS[n], False)
 
@@ -205,41 +235,39 @@ def _on_demo_toggle(name: str):
     current = st.session_state.get("demo_selected")
 
     if now_checked:
-        # selecting this demo -> uncheck all others
         st.session_state["demo_selected"] = name
         for other in DEMO_NAMES:
             if other != name:
                 st.session_state[DEMO_KEYS[other]] = False
     else:
-        # unchecked -> deselect if this was the selected one
         if current == name:
             st.session_state["demo_selected"] = None
 
-# Draw the "button" checkboxes
-c1, c2, c3, c4 = st.columns(4, gap="small")
+# ✅ centered button row by adding side "spacer" columns
+sp_l, b1, b2, b3, b4, sp_r = st.columns([1, 2, 2, 2, 2, 1], gap="small")
 
-with c1:
+with b1:
     st.checkbox(
         f"{DEMOS[DEMO_NAMES[0]]['emoji']} {DEMO_NAMES[0]}",
         key=DEMO_KEYS[DEMO_NAMES[0]],
         on_change=_on_demo_toggle,
         args=(DEMO_NAMES[0],),
     )
-with c2:
+with b2:
     st.checkbox(
         f"{DEMOS[DEMO_NAMES[1]]['emoji']} {DEMO_NAMES[1]}",
         key=DEMO_KEYS[DEMO_NAMES[1]],
         on_change=_on_demo_toggle,
         args=(DEMO_NAMES[1],),
     )
-with c3:
+with b3:
     st.checkbox(
         f"{DEMOS[DEMO_NAMES[2]]['emoji']} {DEMO_NAMES[2]}",
         key=DEMO_KEYS[DEMO_NAMES[2]],
         on_change=_on_demo_toggle,
         args=(DEMO_NAMES[2],),
     )
-with c4:
+with b4:
     st.checkbox(
         f"{DEMOS[DEMO_NAMES[3]]['emoji']} {DEMO_NAMES[3]}",
         key=DEMO_KEYS[DEMO_NAMES[3]],
