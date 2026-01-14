@@ -1,17 +1,8 @@
-# =============================
-# DROP-IN DEBUGGING UPGRADE
-# Paste this whole block into your file:
-# 1) Add the imports (os, traceback)
-# 2) Add the helper functions
-# 3) Replace your existing `if generate:` block with the new one below
-# =============================
-
 from __future__ import annotations
 
-import sys
 import os
+import sys
 import subprocess
-import traceback
 from pathlib import Path
 from datetime import datetime
 
@@ -62,6 +53,36 @@ small, .stCaption {opacity: 0.90;}
   opacity: 0.70;
   margin-bottom: 0.35rem;
 }
+
+/* -----------------------------
+   Demo buttons (checkbox styled)
+   - clickable "button"
+   - selected highlight
+------------------------------ */
+div[data-testid="stCheckbox"] label {
+  width: 100%;
+  justify-content: center;
+  border-radius: 14px !important;
+  padding: 0.70rem 0.90rem !important;
+  border: 1px solid rgba(255,255,255,0.14) !important;
+  background: rgba(255,255,255,0.04) !important;
+}
+
+div[data-testid="stCheckbox"] label:hover {
+  border-color: rgba(255,255,255,0.30) !important;
+  background: rgba(255,255,255,0.06) !important;
+}
+
+/* hide the square checkbox */
+div[data-testid="stCheckbox"] input[type="checkbox"]{
+  display: none !important;
+}
+
+/* selected state (Safari/Chrome/Edge support :has) */
+div[data-testid="stCheckbox"] label:has(input:checked) {
+  border-color: rgba(80,160,255,0.80) !important;
+  background: rgba(80,160,255,0.20) !important;
+}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -108,84 +129,6 @@ DEMOS = {
 }
 
 # -------------------------------------------------
-# Debug helpers
-# -------------------------------------------------
-def _exists(p: str | Path | None) -> bool:
-    if not p:
-        return False
-    return Path(p).exists()
-
-def _head_tail(text: str, head: int = 2000, tail: int = 4000) -> str:
-    """Keep logs readable; show start+end if huge."""
-    if not text:
-        return ""
-    if len(text) <= head + tail + 50:
-        return text
-    return text[:head] + "\n\n... (snip) ...\n\n" + text[-tail:]
-
-def run_cmd_with_logs(cmd: list[str], cwd: Path | None = None, timeout: int = 600):
-    """
-    Run subprocess, capture stdout/stderr, return CompletedProcess.
-    Also prints to server logs for Streamlit Cloud debugging.
-    """
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=os.environ.copy(),
-        )
-        # Print to cloud logs
-        print("\n[HARMONIC_HUNTER] CMD:", " ".join(cmd))
-        print("[HARMONIC_HUNTER] RETURN CODE:", proc.returncode)
-        if proc.stdout:
-            print("[HARMONIC_HUNTER] STDOUT:\n", proc.stdout)
-        if proc.stderr:
-            print("[HARMONIC_HUNTER] STDERR:\n", proc.stderr)
-        return proc
-    except subprocess.TimeoutExpired as e:
-        print("[HARMONIC_HUNTER] TIMEOUT:", str(e))
-        raise
-    except Exception as e:
-        print("[HARMONIC_HUNTER] EXCEPTION:", repr(e))
-        raise
-
-def debug_panel(run_out_dir: Path, cmd: list[str], proc: subprocess.CompletedProcess | None, extra: dict):
-    """Show a nice debug panel in the UI."""
-    with st.expander("🧪 Debug details (click to expand)", expanded=True):
-        st.markdown("**Environment**")
-        st.code(
-            "\n".join(
-                [
-                    f"python: {sys.version}",
-                    f"executable: {sys.executable}",
-                    f"cwd: {os.getcwd()}",
-                    f"ROOT_DIR: {ROOT_DIR}",
-                    f"run_out_dir: {run_out_dir}",
-                ]
-            ),
-            language="text",
-        )
-
-        st.markdown("**Command**")
-        st.code(" ".join(cmd), language="bash")
-
-        st.markdown("**Paths / existence**")
-        st.json(extra)
-
-        if proc is not None:
-            st.markdown("**Return code**")
-            st.code(str(proc.returncode), language="text")
-
-            st.markdown("**STDOUT**")
-            st.code(_head_tail(proc.stdout or ""), language="text")
-
-            st.markdown("**STDERR**")
-            st.code(_head_tail(proc.stderr or ""), language="text")
-
-# -------------------------------------------------
 # Header
 # -------------------------------------------------
 st.title("⚡ Harmonic Hunter")
@@ -230,7 +173,7 @@ with st.sidebar:
     st.caption("Tip: Use a baseline to track risk change across weeks/months.")
 
 # -------------------------------------------------
-# STEP 1 — Facility (single input)
+# STEP 1 — Facility
 # -------------------------------------------------
 st.markdown('<div class="step">STEP 1</div>', unsafe_allow_html=True)
 facility = st.text_input(
@@ -240,33 +183,69 @@ facility = st.text_input(
 )
 
 # -------------------------------------------------
-# STEP 2 — Demo selection (single-select)
+# STEP 2 — Demo selection (single-select toggle buttons)
 # -------------------------------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.markdown('<div class="step">STEP 2</div>', unsafe_allow_html=True)
 st.subheader("Choose demo OR upload your own data")
+st.caption("Click a demo to select it. Click it again to unselect. Only one can be selected.")
 
-st.caption("Select a demo to run it. Click the same demo again to deselect.")
+DEMO_NAMES = list(DEMOS.keys())
+DEMO_KEYS = {name: f"demo_btn__{i}" for i, name in enumerate(DEMO_NAMES)}
 
 st.session_state.setdefault("demo_selected", None)
+# initialize checkbox keys once
+for n in DEMO_NAMES:
+    st.session_state.setdefault(DEMO_KEYS[n], False)
 
-c1, c2, c3, c4 = st.columns(4, gap="small")
-demo_names = list(DEMOS.keys())
+def _on_demo_toggle(name: str):
+    """Enforce single-select + allow unselect by clicking again."""
+    key = DEMO_KEYS[name]
+    now_checked = bool(st.session_state.get(key, False))
+    current = st.session_state.get("demo_selected")
 
-def _demo_checkbox(col, name: str):
-    checked = (st.session_state.get("demo_selected") == name)
-    val = col.checkbox(f"{DEMOS[name]['emoji']} {name}", value=checked, key=f"demo_{name}")
-    if val and not checked:
+    if now_checked:
+        # selecting this demo -> uncheck all others
         st.session_state["demo_selected"] = name
-        st.rerun()
-    if (not val) and checked:
-        st.session_state["demo_selected"] = None
-        st.rerun()
+        for other in DEMO_NAMES:
+            if other != name:
+                st.session_state[DEMO_KEYS[other]] = False
+    else:
+        # unchecked -> deselect if this was the selected one
+        if current == name:
+            st.session_state["demo_selected"] = None
 
-_demo_checkbox(c1, demo_names[0])
-_demo_checkbox(c2, demo_names[1])
-_demo_checkbox(c3, demo_names[2])
-_demo_checkbox(c4, demo_names[3])
+# Draw the "button" checkboxes
+c1, c2, c3, c4 = st.columns(4, gap="small")
+
+with c1:
+    st.checkbox(
+        f"{DEMOS[DEMO_NAMES[0]]['emoji']} {DEMO_NAMES[0]}",
+        key=DEMO_KEYS[DEMO_NAMES[0]],
+        on_change=_on_demo_toggle,
+        args=(DEMO_NAMES[0],),
+    )
+with c2:
+    st.checkbox(
+        f"{DEMOS[DEMO_NAMES[1]]['emoji']} {DEMO_NAMES[1]}",
+        key=DEMO_KEYS[DEMO_NAMES[1]],
+        on_change=_on_demo_toggle,
+        args=(DEMO_NAMES[1],),
+    )
+with c3:
+    st.checkbox(
+        f"{DEMOS[DEMO_NAMES[2]]['emoji']} {DEMO_NAMES[2]}",
+        key=DEMO_KEYS[DEMO_NAMES[2]],
+        on_change=_on_demo_toggle,
+        args=(DEMO_NAMES[2],),
+    )
+with c4:
+    st.checkbox(
+        f"{DEMOS[DEMO_NAMES[3]]['emoji']} {DEMO_NAMES[3]}",
+        key=DEMO_KEYS[DEMO_NAMES[3]],
+        on_change=_on_demo_toggle,
+        args=(DEMO_NAMES[3],),
+    )
 
 demo_used = st.session_state.get("demo_selected") is not None
 
@@ -283,7 +262,7 @@ if demo_used:
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Upload section
+# Upload section (disabled while demo selected)
 # -------------------------------------------------
 st.subheader("Upload your own data")
 
@@ -351,60 +330,18 @@ if generate:
         "--report-kind",
         "executive" if report_kind.startswith("Executive") else "full",
     ]
-
     if baseline_csv_path:
         cmd += ["--baseline-csv", baseline_csv_path]
 
-    pdf_path = run_out_dir / "harmonic_hunter_report.pdf"
-
-    # BEFORE RUN: show what exists
-    pre = {
-        "csv_path": csv_path,
-        "csv_exists": _exists(csv_path),
-        "baseline_csv_path": baseline_csv_path,
-        "baseline_exists": _exists(baseline_csv_path),
-        "samples_dir": str(SAMPLES_DIR),
-        "samples_dir_exists": SAMPLES_DIR.exists(),
-        "uploads_dir": str(UPLOADS_DIR),
-        "uploads_dir_exists": UPLOADS_DIR.exists(),
-        "outputs_dir": str(OUTPUTS_DIR),
-        "outputs_dir_exists": OUTPUTS_DIR.exists(),
-        "run_out_dir": str(run_out_dir),
-        "run_out_dir_exists": run_out_dir.exists(),
-        "expected_pdf": str(pdf_path),
-        "expected_pdf_exists_pre": pdf_path.exists(),
-    }
-
-    proc = None
-    err = None
-
     with st.spinner("Running harmonic risk analysis…"):
-        try:
-            # Increase timeout if your report sometimes takes longer in cloud
-            proc = run_cmd_with_logs(cmd, cwd=ROOT_DIR, timeout=900)
-        except Exception as e:
-            err = traceback.format_exc()
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+        )
 
-    # AFTER RUN: show outputs produced
-    produced_files = []
-    try:
-        if run_out_dir.exists():
-            produced_files = sorted([p.name for p in run_out_dir.glob("*")])
-    except Exception:
-        produced_files = ["<error listing output directory>"]
-
-    post = {
-        **pre,
-        "return_code": getattr(proc, "returncode", None),
-        "expected_pdf_exists_post": pdf_path.exists(),
-        "produced_files": produced_files,
-        "exception": err,
-    }
-
-    # Always show debug panel if PDF missing or return code non-zero or exception
-    should_show_debug = (err is not None) or (proc is None) or (proc.returncode != 0) or (not pdf_path.exists())
-    if should_show_debug:
-        debug_panel(run_out_dir, cmd, proc, post)
+    pdf_path = run_out_dir / "harmonic_hunter_report.pdf"
 
     if pdf_path.exists():
         input_name = Path(csv_path).name.replace(".csv", "")
@@ -418,7 +355,11 @@ if generate:
             use_container_width=True,
         )
     else:
-        st.error("Report failed to generate. Open the Debug details panel above to see why.")
+        st.error("Report failed to generate. Check logs below.")
+        with st.expander("Debug logs", expanded=True):
+            st.code(" ".join(cmd), language="bash")
+            st.code(proc.stdout or "", language="text")
+            st.code(proc.stderr or "", language="text")
 
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.caption(
