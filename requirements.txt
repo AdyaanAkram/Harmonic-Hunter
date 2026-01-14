@@ -5,3 +5,5 @@ matplotlib
 reportlab
 typer
 click
+pydantic>=2.6,<3
+pydantic-settings>=2.2,<3
