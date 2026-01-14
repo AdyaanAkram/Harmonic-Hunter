@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import subprocess
 from pathlib import Path
@@ -8,14 +9,14 @@ from datetime import datetime
 import streamlit as st
 
 # -------------------------------------------------
-# Ensure project root importable (local reliability)
+# Ensure project root importable
 # -------------------------------------------------
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # -------------------------------------------------
-# Page config + premium styling
+# Page config + styling
 # -------------------------------------------------
 st.set_page_config(page_title="Harmonic Hunter", layout="centered")
 
@@ -71,30 +72,10 @@ OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 # Demo datasets
 # -------------------------------------------------
 DEMOS = {
-    "Safe / Baseline": {
-        "emoji": "🟢",
-        "file": SAMPLES_DIR / "demo_safe.csv",
-        "desc": "Stable current with low variability. Establishes a baseline.",
-        "baseline": None,
-    },
-    "Monitor / Early Warning": {
-        "emoji": "🟡",
-        "file": SAMPLES_DIR / "demo_monitor.csv",
-        "desc": "Early indicators of pulsed/non-linear behavior.",
-        "baseline": SAMPLES_DIR / "demo_safe.csv",
-    },
-    "Multiphase Imbalance": {
-        "emoji": "🟠",
-        "file": SAMPLES_DIR / "demo_multiphase.csv",
-        "desc": "Uneven phase behavior; highlights localized phase risk.",
-        "baseline": SAMPLES_DIR / "demo_safe.csv",
-    },
-    "Critical / High Risk": {
-        "emoji": "🔴",
-        "file": SAMPLES_DIR / "demo_critical.csv",
-        "desc": "High variability consistent with elevated risk if sustained.",
-        "baseline": SAMPLES_DIR / "demo_safe.csv",
-    },
+    "Safe / Baseline": SAMPLES_DIR / "demo_safe.csv",
+    "Monitor / Early Warning": SAMPLES_DIR / "demo_monitor.csv",
+    "Multiphase Imbalance": SAMPLES_DIR / "demo_multiphase.csv",
+    "Critical / High Risk": SAMPLES_DIR / "demo_critical.csv",
 }
 
 # -------------------------------------------------
@@ -121,7 +102,7 @@ st.markdown(
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Sidebar (settings)
+# Sidebar
 # -------------------------------------------------
 with st.sidebar:
     st.subheader("⚙️ Report settings")
@@ -142,43 +123,26 @@ with st.sidebar:
     st.caption("Tip: Use a baseline to track risk change across weeks/months.")
 
 # -------------------------------------------------
-# STEP 1 — Facility (single input)
+# Step 1
 # -------------------------------------------------
 st.markdown('<div class="step">STEP 1</div>', unsafe_allow_html=True)
-facility = st.text_input(
-    "Facility name *",
-    value="",
-    placeholder="Enter facility name (required)",
-)
+facility = st.text_input("Facility name *", value="", placeholder="Enter facility name (required)")
 
 # -------------------------------------------------
-# STEP 2 — Demo selection (click again to deselect)
+# Step 2 — Demo selection (checkbox single-select)
 # -------------------------------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.markdown('<div class="step">STEP 2</div>', unsafe_allow_html=True)
 st.subheader("Choose demo OR upload your own data")
 
-st.caption("Select a demo to run it. Click the same demo again to deselect.")
-
-# State for single-select demo checkboxes
 st.session_state.setdefault("demo_selected", None)
 
-def _toggle_demo(name: str):
-    # If clicking the same demo again, deselect
-    if st.session_state.get("demo_selected") == name:
-        st.session_state["demo_selected"] = None
-    else:
-        st.session_state["demo_selected"] = name
-
-# Demo buttons with visible selected state (checkbox style)
 c1, c2, c3, c4 = st.columns(4, gap="small")
 demo_names = list(DEMOS.keys())
 
-def _demo_checkbox(col, name: str):
+def demo_checkbox(col, name: str):
     checked = (st.session_state.get("demo_selected") == name)
-    # checkbox shows selection clearly
-    val = col.checkbox(f"{DEMOS[name]['emoji']} {name}", value=checked, key=f"demo_{name}")
-    # if user toggled
+    val = col.checkbox(name, value=checked, key=f"demo_{name}")
     if val and not checked:
         st.session_state["demo_selected"] = name
         st.rerun()
@@ -186,10 +150,10 @@ def _demo_checkbox(col, name: str):
         st.session_state["demo_selected"] = None
         st.rerun()
 
-_demo_checkbox(c1, demo_names[0])
-_demo_checkbox(c2, demo_names[1])
-_demo_checkbox(c3, demo_names[2])
-_demo_checkbox(c4, demo_names[3])
+demo_checkbox(c1, demo_names[0])
+demo_checkbox(c2, demo_names[1])
+demo_checkbox(c3, demo_names[2])
+demo_checkbox(c4, demo_names[3])
 
 demo_used = st.session_state.get("demo_selected") is not None
 
@@ -197,50 +161,30 @@ csv_path = None
 baseline_csv_path = None
 
 if demo_used:
-    chosen = st.session_state["demo_selected"]
-    demo = DEMOS[chosen]
-    csv_path = str(demo["file"])
-    baseline_csv_path = str(demo["baseline"]) if demo["baseline"] else None
-    st.info(demo["desc"])
+    csv_path = str(DEMOS[st.session_state["demo_selected"]])
+    st.info(f"Using demo dataset: {st.session_state['demo_selected']}")
 
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
-# -------------------------------------------------
-# Upload section (always visible; disabled when demo selected)
-# -------------------------------------------------
-st.subheader("Upload your own data")
-
+# Uploads always visible, disabled if demo selected
 col_u1, col_u2 = st.columns([1, 1], gap="large")
-
 with col_u1:
-    uploaded = st.file_uploader(
-        "Upload CSV",
-        type=["csv"],
-        disabled=demo_used,
-        help="Disabled while a demo is selected.",
-    )
-
+    uploaded = st.file_uploader("Upload CSV", type=["csv"], disabled=demo_used)
 with col_u2:
-    baseline_uploaded = st.file_uploader(
-        "Optional baseline CSV",
-        type=["csv"],
-        disabled=demo_used,
-        help="Disabled while a demo is selected.",
-    )
+    baseline_uploaded = st.file_uploader("Optional baseline CSV", type=["csv"], disabled=demo_used)
 
 if not demo_used:
     if uploaded:
         p = UPLOADS_DIR / uploaded.name
         p.write_bytes(uploaded.getbuffer())
         csv_path = str(p)
-
     if baseline_uploaded:
         p = UPLOADS_DIR / f"baseline__{baseline_uploaded.name}"
         p.write_bytes(baseline_uploaded.getbuffer())
         baseline_csv_path = str(p)
 
 # -------------------------------------------------
-# STEP 3 — Generate
+# Step 3 — Generate
 # -------------------------------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.markdown('<div class="step">STEP 3</div>', unsafe_allow_html=True)
@@ -266,21 +210,27 @@ if generate:
         "-m",
         "harmonic_hunter.main",
         csv_path,
-        "--map-name",
-        map_name,
-        "--facility",
-        facility.strip(),
-        "--out-dir",
-        str(run_out_dir),
-        "--report-kind",
-        "executive" if report_kind.startswith("Executive") else "full",
+        "--map-name", map_name,
+        "--facility", facility.strip(),
+        "--out-dir", str(run_out_dir),
+        "--report-kind", "executive" if report_kind.startswith("Executive") else "full",
     ]
 
     if baseline_csv_path:
         cmd += ["--baseline-csv", baseline_csv_path]
 
+    # 🔑 Cloud-safe subprocess: run from repo root + set PYTHONPATH
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT_DIR)
+
     with st.spinner("Running harmonic risk analysis…"):
-        subprocess.run(cmd, check=False)
+        result = subprocess.run(
+            cmd,
+            cwd=str(ROOT_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
 
     pdf_path = run_out_dir / "harmonic_hunter_report.pdf"
 
@@ -296,7 +246,12 @@ if generate:
             use_container_width=True,
         )
     else:
-        st.error("Report failed to generate. Check terminal output/logs.")
+        st.error("Report failed to generate. See logs below.")
+
+        with st.expander("Show generation logs"):
+            st.write(f"Return code: {result.returncode}")
+            st.code(result.stdout or "(no stdout)")
+            st.code(result.stderr or "(no stderr)")
 
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.caption(
