@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import subprocess
 from pathlib import Path
@@ -54,62 +53,85 @@ small, .stCaption {opacity: 0.90;}
   margin-bottom: 0.35rem;
 }
 
-/* -----------------------------
-   Demo buttons (checkbox styled)
-   - same size
-   - centered text
-   - hide checkbox square
-   - selected highlight
------------------------------- */
-div[data-testid="stCheckbox"] {
-  width: 100%;
+/* =================================================
+   Demo selector as TRUE "buttons" (radio styled)
+   - no checkbox shown
+   - whole button highlights when selected
+   - same size, centered text
+================================================= */
+
+div[data-testid="stRadio"] div[role="radiogroup"]{
+  display: flex !important;
+  gap: 14px !important;
+  justify-content: center !important;
+  align-items: stretch !important;
+  flex-wrap: nowrap !important;
 }
 
-/* Make the whole label look like a button */
-div[data-testid="stCheckbox"] label {
-  width: 100% !important;
+/* Each option label becomes a button */
+div[data-testid="stRadio"] label{
+  flex: 1 1 0 !important;
+  min-width: 210px !important;
+  max-width: 240px !important;
+
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
 
   border-radius: 16px !important;
-  padding: 0.90rem 1.00rem !important;
-  min-height: 64px !important;            /* SAME HEIGHT */
+  padding: 0.95rem 1.05rem !important;
+  min-height: 74px !important;
+
   border: 1px solid rgba(255,255,255,0.14) !important;
   background: rgba(255,255,255,0.04) !important;
 
   text-align: center !important;
   cursor: pointer !important;
+
+  /* prevent weird vertical letter stacking */
+  white-space: normal !important;
+  word-break: normal !important;
 }
 
-/* Hide the default checkbox square container (Streamlit puts it inside label) */
-div[data-testid="stCheckbox"] label > div:first-child {
+/* Hide the default radio circle container */
+div[data-testid="stRadio"] label > div:first-child{
   display: none !important;
 }
 
-/* Also hide the actual input */
-div[data-testid="stCheckbox"] input[type="checkbox"]{
+/* Hide the actual input */
+div[data-testid="stRadio"] input[type="radio"]{
   display: none !important;
 }
 
-/* Nice hover */
-div[data-testid="stCheckbox"] label:hover {
+/* Hover */
+div[data-testid="stRadio"] label:hover{
   border-color: rgba(255,255,255,0.30) !important;
   background: rgba(255,255,255,0.06) !important;
 }
 
-/* Selected state (Safari/Chrome/Edge support :has) */
-div[data-testid="stCheckbox"] label:has(input:checked) {
-  border-color: rgba(80,160,255,0.80) !important;
-  background: rgba(80,160,255,0.20) !important;
+/* Selected state (whole button changes color) */
+div[data-testid="stRadio"] label:has(input:checked){
+  border-color: rgba(80,160,255,0.85) !important;
+  background: rgba(80,160,255,0.22) !important;
 }
 
-/* Center + keep text readable if it wraps */
-div[data-testid="stCheckbox"] label span {
-  display: block !important;
+/* Text inside option */
+div[data-testid="stRadio"] label span{
   width: 100% !important;
-  line-height: 1.15 !important;
+  line-height: 1.18 !important;
   font-weight: 650 !important;
+  display: block !important;
+  text-align: center !important;
+}
+
+/* Responsive fallback: allow wrap on smaller screens */
+@media (max-width: 980px){
+  div[data-testid="stRadio"] div[role="radiogroup"]{
+    flex-wrap: wrap !important;
+  }
+  div[data-testid="stRadio"] label{
+    min-width: 180px !important;
+  }
 }
 </style>
 """
@@ -211,78 +233,41 @@ facility = st.text_input(
 )
 
 # -------------------------------------------------
-# STEP 2 — Demo selection (single-select toggle buttons)
+# STEP 2 — Demo selection (real "button" behavior)
 # -------------------------------------------------
 st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 st.markdown('<div class="step">STEP 2</div>', unsafe_allow_html=True)
-
-# ✅ removed "OR upload your own data"
 st.subheader("Choose a demo")
+st.caption("Select one demo. To unselect, choose “No demo selected”.")
 
-st.caption("Click a demo to select it. Click it again to unselect. Only one can be selected.")
+demo_labels = ["No demo selected"] + [f"{DEMOS[k]['emoji']} {k}" for k in DEMOS.keys()]
+demo_map = {"No demo selected": None}
+for k in DEMOS.keys():
+    demo_map[f"{DEMOS[k]['emoji']} {k}"] = k
 
-DEMO_NAMES = list(DEMOS.keys())
-DEMO_KEYS = {name: f"demo_btn__{i}" for i, name in enumerate(DEMO_NAMES)}
+# Keep selection stable across reruns
+st.session_state.setdefault("demo_choice_label", "No demo selected")
 
-st.session_state.setdefault("demo_selected", None)
-for n in DEMO_NAMES:
-    st.session_state.setdefault(DEMO_KEYS[n], False)
+choice_label = st.radio(
+    "Demo selector",
+    demo_labels,
+    index=demo_labels.index(st.session_state["demo_choice_label"])
+    if st.session_state["demo_choice_label"] in demo_labels
+    else 0,
+    horizontal=True,
+    label_visibility="collapsed",
+)
 
-def _on_demo_toggle(name: str):
-    """Enforce single-select + allow unselect by clicking again."""
-    key = DEMO_KEYS[name]
-    now_checked = bool(st.session_state.get(key, False))
-    current = st.session_state.get("demo_selected")
+st.session_state["demo_choice_label"] = choice_label
+chosen_demo_key = demo_map.get(choice_label, None)
 
-    if now_checked:
-        st.session_state["demo_selected"] = name
-        for other in DEMO_NAMES:
-            if other != name:
-                st.session_state[DEMO_KEYS[other]] = False
-    else:
-        if current == name:
-            st.session_state["demo_selected"] = None
-
-# ✅ centered button row by adding side "spacer" columns
-sp_l, b1, b2, b3, b4, sp_r = st.columns([1, 2, 2, 2, 2, 1], gap="small")
-
-with b1:
-    st.checkbox(
-        f"{DEMOS[DEMO_NAMES[0]]['emoji']} {DEMO_NAMES[0]}",
-        key=DEMO_KEYS[DEMO_NAMES[0]],
-        on_change=_on_demo_toggle,
-        args=(DEMO_NAMES[0],),
-    )
-with b2:
-    st.checkbox(
-        f"{DEMOS[DEMO_NAMES[1]]['emoji']} {DEMO_NAMES[1]}",
-        key=DEMO_KEYS[DEMO_NAMES[1]],
-        on_change=_on_demo_toggle,
-        args=(DEMO_NAMES[1],),
-    )
-with b3:
-    st.checkbox(
-        f"{DEMOS[DEMO_NAMES[2]]['emoji']} {DEMO_NAMES[2]}",
-        key=DEMO_KEYS[DEMO_NAMES[2]],
-        on_change=_on_demo_toggle,
-        args=(DEMO_NAMES[2],),
-    )
-with b4:
-    st.checkbox(
-        f"{DEMOS[DEMO_NAMES[3]]['emoji']} {DEMO_NAMES[3]}",
-        key=DEMO_KEYS[DEMO_NAMES[3]],
-        on_change=_on_demo_toggle,
-        args=(DEMO_NAMES[3],),
-    )
-
-demo_used = st.session_state.get("demo_selected") is not None
+demo_used = chosen_demo_key is not None
 
 csv_path = None
 baseline_csv_path = None
 
 if demo_used:
-    chosen = st.session_state["demo_selected"]
-    demo = DEMOS[chosen]
+    demo = DEMOS[chosen_demo_key]
     csv_path = str(demo["file"])
     baseline_csv_path = str(demo["baseline"]) if demo["baseline"] else None
     st.info(demo["desc"])
