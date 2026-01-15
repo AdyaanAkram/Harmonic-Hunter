@@ -9,6 +9,11 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.colors import black, HexColor
 from reportlab.lib.utils import ImageReader
 
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+except Exception:
+    ZoneInfo = None  # type: ignore
+
 ReportKind = Literal["executive", "full"]
 
 COLORS = {
@@ -23,6 +28,7 @@ COLORS = {
     "line": HexColor("#2A2F3A"),
 }
 
+
 def _risk_color(band: str):
     b = (band or "").lower()
     if "safe" in b:
@@ -33,26 +39,63 @@ def _risk_color(band: str):
         return COLORS["action"]
     return COLORS["critical"]
 
-def _wrap(c: canvas.Canvas, x: float, y: float, text: str, max_chars: int = 90, lh: int = 13) -> float:
+
+def _now_local_str() -> str:
+    """
+    Timezone-aware timestamp.
+    If running in Streamlit Cloud (UTC), you can set HH_TZ=America/Chicago (or your TZ)
+    to display local time.
+    """
+    tzname = os.getenv("HH_TZ") or os.getenv("TZ")
+    if tzname and ZoneInfo is not None:
+        try:
+            dt = datetime.now(ZoneInfo(tzname))
+            return dt.strftime("Generated: %Y-%m-%d %H:%M %Z")
+        except Exception:
+            pass
+
+    # Fallback: system-local (often UTC on cloud, but at least consistent + labeled)
+    dt = datetime.now().astimezone()
+    return dt.strftime("Generated: %Y-%m-%d %H:%M %Z")
+
+
+def _wrap_width(
+    c: canvas.Canvas,
+    x: float,
+    y: float,
+    text: str,
+    max_width: float,
+    lh: float = 13,
+) -> float:
+    """
+    Wrap by actual rendered width (NOT character count).
+    Returns new y after drawing.
+    """
     if not text:
         return y
+
     words = text.split()
     line = ""
     for w in words:
         candidate = (line + " " + w).strip()
-        if len(candidate) <= max_chars:
+        if c.stringWidth(candidate, c._fontname, c._fontsize) <= max_width:
             line = candidate
         else:
-            c.drawString(x, y, line)
-            y -= lh
+            if line:
+                c.drawString(x, y, line)
+                y -= lh
             line = w
+
     if line:
         c.drawString(x, y, line)
         y -= lh
+
     return y
+
 
 def _safe_img_paths(paths: list[str]) -> list[str]:
     return [p for p in (paths or []) if p and os.path.exists(p)]
+
 
 def _pretty_chart_title(path: str) -> str:
     name = os.path.basename(path).replace(".png", "").replace("_", " ")
@@ -65,6 +108,7 @@ def _pretty_chart_title(path: str) -> str:
     if name == "risk delta":
         return "Baseline vs Current Risk"
     return name.title()
+
 
 def build_pdf_report(
     out_pdf: str,
@@ -98,16 +142,17 @@ def build_pdf_report(
     c.setFont("Helvetica-Bold", 22)
     c.setFillColor(COLORS["text"])
     c.drawString(m, H - 52, "Harmonic Hunter")
+
     c.setFont("Helvetica", 12)
     c.setFillColor(COLORS["muted"])
     c.drawString(m, H - 70, "Power Quality Risk Report")
-    c.setFillColor(black)
 
+    # ✅ Header info stacked (no overlap)
     c.setFont("Helvetica", 10.2)
     c.setFillColor(COLORS["muted"])
-    c.drawString(m, H - 92, f"Facility: {facility_name}")
-    c.drawString(m + 250, H - 92, f"Mode: {report_mode}")
-    c.drawString(m + 430, H - 92, datetime.now().strftime("Generated: %Y-%m-%d %H:%M"))
+    c.drawString(m, H - 90, f"Facility: {facility_name}")
+    c.drawString(m, H - 104, f"Mode: {report_mode}")
+    c.drawString(m, H - 118 + 10, _now_local_str())  # near bottom of band
     c.setFillColor(black)
 
     # ===== Risk card (dark) =====
@@ -117,28 +162,51 @@ def build_pdf_report(
     c.roundRect(m, panel_y, W - 2 * m, panel_h, 14, fill=1, stroke=0)
     c.setFillColor(black)
 
+    # Layout constants
+    chart_w = 220
+    chart_h = 95
+    chart_x = W - m - chart_w
+    chart_y = panel_y + 20
+    chart_gap = 18
+
+    # Text should not flow under chart area
+    safe_text_right = chart_x - chart_gap
+    safe_text_width = max(80, safe_text_right - (m + 18))
+
+    # Score
     c.setFont("Helvetica-Bold", 44)
     c.setFillColor(COLORS["text"])
     c.drawString(m + 18, panel_y + panel_h - 84, f"{risk_score}")
+
     c.setFont("Helvetica", 12)
     c.setFillColor(COLORS["muted"])
     c.drawString(m + 96, panel_y + panel_h - 60, "/100")
-    c.setFillColor(black)
 
+    # Risk band
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(_risk_color(risk_band))
     c.drawString(m + 170, panel_y + panel_h - 62, risk_band)
-    c.setFillColor(black)
 
-    # Baseline text inside dark card
-    c.setFont("Helvetica", 10.6)
-    c.setFillColor(COLORS["muted"])
+    # Baseline line + change summary (wrapped to avoid chart overlap)
     if baseline_score is not None and risk_delta is not None:
+        c.setFont("Helvetica", 10.6)
+        c.setFillColor(COLORS["muted"])
         sign = "+" if risk_delta > 0 else ""
-        c.drawString(m + 170, panel_y + panel_h - 86, f"Baseline: {baseline_score}/100   Δ {sign}{risk_delta}")
+        base_line = f"Baseline: {baseline_score}/100   Δ {sign}{risk_delta}"
+        c.drawString(m + 170, panel_y + panel_h - 86, base_line)
+
         if change_summary:
-            c.drawString(m + 170, panel_y + panel_h - 102, change_summary)
-    c.setFillColor(black)
+            # ✅ Wrap within safe area (won’t go under chart)
+            c.setFont("Helvetica", 10.6)
+            c.setFillColor(COLORS["muted"])
+            _wrap_width(
+                c,
+                m + 170,
+                panel_y + panel_h - 102,
+                change_summary,
+                max_width=max(80, safe_text_right - (m + 170)),
+                lh=12,
+            )
 
     # Delta chart thumbnail
     if delta_chart_path and os.path.exists(delta_chart_path):
@@ -146,32 +214,39 @@ def build_pdf_report(
             img = ImageReader(delta_chart_path)
             c.drawImage(
                 img,
-                W - m - 220,
-                panel_y + 20,
-                width=220,
-                height=95,
+                chart_x,
+                chart_y,
+                width=chart_w,
+                height=chart_h,
                 preserveAspectRatio=True,
                 mask="auto",
             )
         except Exception:
             pass
 
-    # Verdict inside dark card
+    # Executive verdict (wrapped to avoid chart overlap)
     vx = m + 18
     vy = panel_y + panel_h - 126
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(COLORS["text"])
     c.drawString(vx, vy, "Executive verdict")
-    c.setFillColor(black)
 
     c.setFont("Helvetica", 11)
     c.setFillColor(COLORS["muted"])
-    _wrap(c, vx, vy - 16, executive_verdict, max_chars=62, lh=13)
+    _wrap_width(
+        c,
+        vx,
+        vy - 16,
+        executive_verdict,
+        max_width=safe_text_width,
+        lh=13,
+    )
     c.setFillColor(black)
 
-    # ===== BELOW CARD: WHITE BACKGROUND => BLACK TEXT (FIX) =====
+    # ===== BELOW CARD (white background, black text) =====
     y = panel_y - 26
 
+    # Key observations
     c.setFont("Helvetica-Bold", 12.5)
     c.setFillColor(black)
     c.drawString(m, y, "Key observations")
@@ -180,35 +255,35 @@ def build_pdf_report(
     c.setFont("Helvetica", 11)
     c.setFillColor(black)
     for obs in (key_observations or [])[:4]:
-        y = _wrap(c, m + 8, y, f"• {obs}", max_chars=106, lh=13)
+        y = _wrap_width(c, m + 8, y, f"• {obs}", max_width=W - 2 * m - 8, lh=13)
 
     y -= 6
     c.setStrokeColor(COLORS["line"])
     c.line(m, y, W - m, y)
     c.setStrokeColor(black)
-    y -= 16
+    y -= 18
 
-    # Two columns on white background
-    col_w = (W - 2 * m - 18) / 2
-    left_x = m
-    right_x = m + col_w + 18
-
+    # ✅ Stack sections vertically to prevent overlap
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(black)
-    c.drawString(left_x, y, "Why you’re seeing this result")
-    c.drawString(right_x, y, "Recommended next steps")
+    c.drawString(m, y, "Why you’re seeing this result")
     y -= 16
 
     c.setFont("Helvetica", 10.8)
     c.setFillColor(black)
-
-    yy = y
     for line in (why_lines or [])[:4]:
-        yy = _wrap(c, left_x + 8, yy, f"• {line}", max_chars=62, lh=12)
+        y = _wrap_width(c, m + 8, y, f"• {line}", max_width=W - 2 * m - 8, lh=12)
 
-    ry = y
+    y -= 10
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(black)
+    c.drawString(m, y, "Recommended next steps")
+    y -= 16
+
+    c.setFont("Helvetica", 10.8)
+    c.setFillColor(black)
     for rec in (recommendations or [])[:7]:
-        ry = _wrap(c, right_x + 8, ry, f"• {rec}", max_chars=62, lh=12)
+        y = _wrap_width(c, m + 8, y, f"• {rec}", max_width=W - 2 * m - 8, lh=12)
 
     # Footer disclaimer
     c.setFont("Helvetica-Oblique", 8.8)
@@ -279,6 +354,7 @@ def build_pdf_report(
         c.setFont("Helvetica", 10)
         c.setFillColor(black)
 
+        maxw = W - 2 * m
         for line in (summary_lines or []):
             if y < 78:
                 c.showPage()
@@ -290,6 +366,6 @@ def build_pdf_report(
                 c.setFont("Helvetica", 10)
                 c.setFillColor(black)
 
-            y = _wrap(c, m, y, f"• {line}", max_chars=110, lh=12)
+            y = _wrap_width(c, m, y, f"• {line}", max_width=maxw, lh=12)
 
     c.save()
