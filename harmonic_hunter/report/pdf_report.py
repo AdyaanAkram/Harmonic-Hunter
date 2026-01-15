@@ -14,6 +14,7 @@ try:
 except Exception:
     ZoneInfo = None  # type: ignore
 
+
 ReportKind = Literal["executive", "full"]
 
 COLORS = {
@@ -40,23 +41,22 @@ def _risk_color(band: str):
     return COLORS["critical"]
 
 
-def _now_local_str() -> str:
+def _now_chicago_str() -> str:
     """
-    Timezone-aware timestamp.
-    If running in Streamlit Cloud (UTC), you can set HH_TZ=America/Chicago (or your TZ)
-    to display local time.
+    Always render Generated time as Chicago time (America/Chicago),
+    unless HH_TZ is provided.
     """
-    tzname = os.getenv("HH_TZ") or os.getenv("TZ")
-    if tzname and ZoneInfo is not None:
+    tzname = os.getenv("HH_TZ") or "America/Chicago"
+    if ZoneInfo is not None:
         try:
             dt = datetime.now(ZoneInfo(tzname))
-            return dt.strftime("Generated: %Y-%m-%d %H:%M %Z")
+            return dt.strftime("%Y-%m-%d %H:%M %Z")
         except Exception:
             pass
 
-    # Fallback: system-local (often UTC on cloud, but at least consistent + labeled)
+    # Fallback if ZoneInfo missing (unlikely): system local
     dt = datetime.now().astimezone()
-    return dt.strftime("Generated: %Y-%m-%d %H:%M %Z")
+    return dt.strftime("%Y-%m-%d %H:%M %Z")
 
 
 def _wrap_width(
@@ -67,10 +67,7 @@ def _wrap_width(
     max_width: float,
     lh: float = 13,
 ) -> float:
-    """
-    Wrap by actual rendered width (NOT character count).
-    Returns new y after drawing.
-    """
+    """Wrap by actual rendered width. Returns new y after drawing."""
     if not text:
         return y
 
@@ -134,11 +131,12 @@ def build_pdf_report(
     W, H = letter
     m = 48
 
-    # ===== Page 1 header band (dark) =====
+    # ===== Header band =====
+    band_h = 118
     c.setFillColor(COLORS["panel"])
-    c.rect(0, H - 118, W, 118, fill=1, stroke=0)
-    c.setFillColor(black)
+    c.rect(0, H - band_h, W, band_h, fill=1, stroke=0)
 
+    # Title / subtitle (left)
     c.setFont("Helvetica-Bold", 22)
     c.setFillColor(COLORS["text"])
     c.drawString(m, H - 52, "Harmonic Hunter")
@@ -147,71 +145,80 @@ def build_pdf_report(
     c.setFillColor(COLORS["muted"])
     c.drawString(m, H - 70, "Power Quality Risk Report")
 
-    # ✅ Header info stacked (no overlap)
-    c.setFont("Helvetica", 10.2)
+    # Facility (left) + Mode/Generated (right)
+    c.setFont("Helvetica", 10.6)
     c.setFillColor(COLORS["muted"])
-    c.drawString(m, H - 90, f"Facility: {facility_name}")
-    c.drawString(m, H - 104, f"Mode: {report_mode}")
-    c.drawString(m, H - 118 + 10, _now_local_str())  # near bottom of band
-    c.setFillColor(black)
+
+    # Left line
+    c.drawString(m, H - 92, f"Facility: {facility_name}")
+
+    # Right corner lines (NO overlap, right-aligned)
+    right_x = W - m
+    c.drawRightString(right_x, H - 92, f"Mode: {report_mode}")
+    c.drawRightString(right_x, H - 106, f"Generated: {_now_chicago_str()}")
 
     # ===== Risk card (dark) =====
     panel_y = H - 340
     panel_h = 195
     c.setFillColor(COLORS["panel2"])
     c.roundRect(m, panel_y, W - 2 * m, panel_h, 14, fill=1, stroke=0)
-    c.setFillColor(black)
 
-    # Layout constants
+    # Decide whether we have a delta chart to render
+    has_delta_chart = bool(delta_chart_path and os.path.exists(delta_chart_path))
+
+    # Chart area constants (only reserve space if we actually draw it)
     chart_w = 220
     chart_h = 95
     chart_x = W - m - chart_w
     chart_y = panel_y + 20
     chart_gap = 18
 
-    # Text should not flow under chart area
-    safe_text_right = chart_x - chart_gap
-    safe_text_width = max(80, safe_text_right - (m + 18))
+    if has_delta_chart:
+        safe_text_right = chart_x - chart_gap
+    else:
+        safe_text_right = W - m - 18  # full width when no chart
+
+    # Left text starts at m+18
+    text_left = m + 18
+    safe_text_width = max(120, safe_text_right - text_left)
 
     # Score
     c.setFont("Helvetica-Bold", 44)
     c.setFillColor(COLORS["text"])
-    c.drawString(m + 18, panel_y + panel_h - 84, f"{risk_score}")
+    c.drawString(text_left, panel_y + panel_h - 84, f"{risk_score}")
 
     c.setFont("Helvetica", 12)
     c.setFillColor(COLORS["muted"])
-    c.drawString(m + 96, panel_y + panel_h - 60, "/100")
+    c.drawString(text_left + 78, panel_y + panel_h - 60, "/100")
 
-    # Risk band
+    # Band
     c.setFont("Helvetica-Bold", 18)
     c.setFillColor(_risk_color(risk_band))
-    c.drawString(m + 170, panel_y + panel_h - 62, risk_band)
+    c.drawString(text_left + 152, panel_y + panel_h - 62, risk_band)
 
-    # Baseline line + change summary (wrapped to avoid chart overlap)
+    # Baseline text + change summary (wrapped so it NEVER goes under chart)
+    c.setFont("Helvetica", 10.6)
+    c.setFillColor(COLORS["muted"])
+    base_y = panel_y + panel_h - 86
+
     if baseline_score is not None and risk_delta is not None:
-        c.setFont("Helvetica", 10.6)
-        c.setFillColor(COLORS["muted"])
         sign = "+" if risk_delta > 0 else ""
-        base_line = f"Baseline: {baseline_score}/100   Δ {sign}{risk_delta}"
-        c.drawString(m + 170, panel_y + panel_h - 86, base_line)
+        c.drawString(text_left + 152, base_y, f"Baseline: {baseline_score}/100   Δ {sign}{risk_delta}")
 
         if change_summary:
-            # ✅ Wrap within safe area (won’t go under chart)
-            c.setFont("Helvetica", 10.6)
-            c.setFillColor(COLORS["muted"])
             _wrap_width(
                 c,
-                m + 170,
-                panel_y + panel_h - 102,
+                text_left + 152,
+                base_y - 16,
                 change_summary,
-                max_width=max(80, safe_text_right - (m + 170)),
+                max_width=max(80, safe_text_right - (text_left + 152)),
                 lh=12,
             )
 
-    # Delta chart thumbnail
-    if delta_chart_path and os.path.exists(delta_chart_path):
+    # Delta chart thumbnail (only if it exists)
+    if has_delta_chart:
         try:
-            img = ImageReader(delta_chart_path)
+            img = ImageReader(delta_chart_path)  # type: ignore[arg-type]
             c.drawImage(
                 img,
                 chart_x,
@@ -225,7 +232,7 @@ def build_pdf_report(
             pass
 
     # Executive verdict (wrapped to avoid chart overlap)
-    vx = m + 18
+    vx = text_left
     vy = panel_y + panel_h - 126
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(COLORS["text"])
@@ -241,7 +248,6 @@ def build_pdf_report(
         max_width=safe_text_width,
         lh=13,
     )
-    c.setFillColor(black)
 
     # ===== BELOW CARD (white background, black text) =====
     y = panel_y - 26
@@ -260,10 +266,9 @@ def build_pdf_report(
     y -= 6
     c.setStrokeColor(COLORS["line"])
     c.line(m, y, W - m, y)
-    c.setStrokeColor(black)
     y -= 18
 
-    # ✅ Stack sections vertically to prevent overlap
+    # Stack sections vertically (prevents overlap)
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(black)
     c.drawString(m, y, "Why you’re seeing this result")
@@ -293,11 +298,10 @@ def build_pdf_report(
         26,
         "Advisory analysis based on exported PDU/UPS monitoring data. Not a substitute for on-site inspection or licensed engineering assessment.",
     )
-    c.setFillColor(black)
 
     c.showPage()
 
-    # ===== Charts (white background, BLACK text) =====
+    # ===== Charts pages =====
     chart_paths = _safe_img_paths(images or [])
     if report_kind == "executive":
         chart_paths = chart_paths[:3]
@@ -344,7 +348,7 @@ def build_pdf_report(
 
             c.showPage()
 
-    # ===== Technical findings (full only, BLACK text) =====
+    # ===== Technical findings (full only) =====
     if report_kind == "full":
         y = H - m
         c.setFont("Helvetica-Bold", 14)
